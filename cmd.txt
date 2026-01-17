@@ -1,7 +1,9 @@
- 
- source venv/bin/activate
+pip install -r requirements.txt 
+
+source venv/bin/activate
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
+python voice_listener_client.py
 
 curl -X POST http://localhost:8000/api/v1/voice \
   -F "audio=@your_audio_file.wav"
