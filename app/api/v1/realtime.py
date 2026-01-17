@@ -97,65 +97,87 @@ async def websocket_voice_endpoint(websocket: WebSocket):
                             # Now listen for the actual query with a timeout
                             await websocket.send_json({
                                 "type": "status",
-                                "message": "🎯 Listening for your question (listening for 5 seconds)..."
+                                "message": "🎯 Listening for your question (listening for up to 5 seconds)..."
                             })
                             
                             # Accumulate next audio for the query
                             query_audio_buffer = io.BytesIO()
-                            query_accumulated = False
-                            silence_count = 0
-                            max_silence = 15  # ~3 seconds of silence at 0.2s per iteration
+                            query_start_time = None
+                            last_audio_time = None
+                            query_timeout = 5.0  # Max 5 seconds to listen
+                            silence_timeout = 2.0  # 2 seconds of silence = end of query
                             
                             try:
-                                while silence_count < max_silence:
+                                while True:
                                     try:
-                                        # Wait for audio with timeout
+                                        # Wait for audio with short timeout
                                         query_data = await asyncio.wait_for(
                                             websocket.receive(),
-                                            timeout=0.5
+                                            timeout=0.1
                                         )
                                         
                                         if "bytes" in query_data:
+                                            if query_start_time is None:
+                                                query_start_time = asyncio.get_event_loop().time()
+                                            
                                             query_audio_buffer.write(query_data["bytes"])
-                                            query_accumulated = True
-                                            silence_count = 0  # Reset silence counter
-                                        
+                                            last_audio_time = asyncio.get_event_loop().time()
+                                    
                                     except asyncio.TimeoutError:
-                                        # Timeout waiting for data = silence
-                                        silence_count += 1
+                                        # Check if we should stop listening
+                                        current_time = asyncio.get_event_loop().time()
+                                        
+                                        # If we have audio and silence timeout reached
+                                        if query_start_time is not None and last_audio_time is not None:
+                                            time_since_audio = current_time - last_audio_time
+                                            if time_since_audio > silence_timeout:
+                                                logger.info(f"Silence detected ({time_since_audio:.1f}s), ending query")
+                                                break
+                                            
+                                            # Check total timeout
+                                            total_time = current_time - query_start_time
+                                            if total_time > query_timeout:
+                                                logger.info(f"Total timeout reached ({total_time:.1f}s), ending query")
+                                                break
+                                        
+                                        continue
                             
                             except Exception as e:
                                 logger.error(f"Error receiving query audio: {str(e)}")
                             
-                            if query_accumulated and query_audio_buffer.tell() > 0:
-                                # Process the query
+                            # Process the query if we have audio
+                            if query_audio_buffer.tell() > 0:
+                                query_audio = query_audio_buffer.getvalue()
+                                logger.info(f"Query audio size: {len(query_audio)} bytes")
+                                
                                 await websocket.send_json({
                                     "type": "processing",
                                     "message": "📖 Processing your query..."
                                 })
                                 
-                                query_audio = query_audio_buffer.getvalue()
-                                logger.info(f"Query audio size: {len(query_audio)} bytes")
-                                
                                 try:
                                     # Transcribe query
+                                    logger.info("Transcribing query audio...")
                                     query_text = await voice_service.speech_to_text(query_audio)
-                                    logger.info(f"User query: {query_text}")
+                                    logger.info(f"Query transcribed: '{query_text}'")
                                     
                                     if query_text.strip():
                                         # Generate response
+                                        logger.info("Generating response...")
                                         chat_request = ChatRequest(
                                             user_id="voice_ws_user",
                                             message=query_text
                                         )
                                         response = await llm_service.generate_response(chat_request)
-                                        logger.info(f"Generated response: {response.message[:100]}...")
+                                        logger.info(f"Response generated: {response.message[:100]}...")
                                         
                                         # Convert response to speech
+                                        logger.info("Converting response to speech...")
                                         response_audio = await voice_service.text_to_speech(
                                             response.message,
                                             voice="nova"
                                         )
+                                        logger.info(f"Audio response size: {len(response_audio)} bytes")
                                         
                                         # Send response
                                         import base64
@@ -165,18 +187,20 @@ async def websocket_voice_endpoint(websocket: WebSocket):
                                             "audio": base64.b64encode(response_audio).decode('utf-8')
                                         })
                                     else:
+                                        logger.warning("Query text is empty after transcription")
                                         await websocket.send_json({
                                             "type": "error",
                                             "message": "Could not transcribe your question. Please try again."
                                         })
                                 
                                 except Exception as e:
-                                    logger.error(f"Error processing query: {str(e)}")
+                                    logger.error(f"Error processing query: {str(e)}", exc_info=True)
                                     await websocket.send_json({
                                         "type": "error",
                                         "message": f"Error: {str(e)}"
                                     })
                             else:
+                                logger.warning("No audio received for query")
                                 await websocket.send_json({
                                     "type": "error",
                                     "message": "No audio detected after wake word. Please try again."
@@ -188,6 +212,7 @@ async def websocket_voice_endpoint(websocket: WebSocket):
                                 "message": "🎤 Listening for 'Griot' again..."
                             })
                             audio_buffer = io.BytesIO()
+                            break
                         else:
                             # No wake word yet, keep listening
                             await websocket.send_json({
