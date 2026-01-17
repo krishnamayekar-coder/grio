@@ -36,20 +36,32 @@ class WakeWordDetector:
         """
         text_lower = text.lower().strip()
         
-        # Check if wake word is at the beginning
-        if text_lower.startswith(self.wake_word):
-            # Remove wake word and get the rest
-            cleaned = text_lower[len(self.wake_word):].strip()
-            logger.info(f"✨ Wake word '{self.wake_word}' detected!")
-            return True, cleaned
+        # Wake word variations and phonetic matches
+        wake_words = [
+            "griot",        # Exact match
+            "griots",       # Plural
+            "greet",        # Common misheard
+            "great",        # Common misheard
+            "grief",        # Common misheard
+            "grid",         # Common misheard
+            "you",          # Very common misheard version
+            "rue",          # Another variant
+            "true",         # Another variant
+        ]
         
-        # Check if wake word is in the text with word boundaries
-        pattern = rf'\b{re.escape(self.wake_word)}\b'
-        if re.search(pattern, text_lower):
-            # Remove wake word from text
-            cleaned = re.sub(pattern, '', text_lower, count=1).strip()
-            logger.info(f"✨ Wake word '{self.wake_word}' detected in text!")
-            return True, cleaned
+        for wake in wake_words:
+            # Check if wake word is at the beginning
+            if text_lower.startswith(wake):
+                cleaned = text_lower[len(wake):].strip()
+                logger.info(f"✨ Wake word detected: '{wake}' from input '{text}'")
+                return True, cleaned
+            
+            # Check if wake word is in the text with word boundaries
+            pattern = rf'\b{re.escape(wake)}\b'
+            if re.search(pattern, text_lower):
+                cleaned = re.sub(pattern, '', text_lower, count=1).strip()
+                logger.info(f"✨ Wake word detected in text: '{wake}' from input '{text}'")
+                return True, cleaned
         
         return False, text
     

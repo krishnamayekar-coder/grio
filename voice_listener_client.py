@@ -4,6 +4,7 @@ import websockets
 import json
 import pyaudio
 import wave
+import io
 from pathlib import Path
 from typing import Optional
 import base64
@@ -13,6 +14,19 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
+
+
+def create_wav_from_bytes(audio_bytes: bytes) -> bytes:
+    """Convert raw PCM audio bytes to WAV format."""
+    wav_buffer = io.BytesIO()
+    
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(CHANNELS)
+        wav_file.setsampwidth(2)  # 16-bit = 2 bytes
+        wav_file.setframerate(RATE)
+        wav_file.writeframes(audio_bytes)
+    
+    return wav_buffer.getvalue()
 
 
 class GriotVoiceClient:
@@ -67,12 +81,30 @@ class GriotVoiceClient:
             
             print("🎤 Recording started...\n")
             
+            audio_buffer = b""
+            chunk_count = 0
+            
             try:
                 while True:
                     data = stream.read(CHUNK, exception_on_overflow=False)
-                    await websocket.send(data)
+                    audio_buffer += data
+                    chunk_count += 1
+                    
+                    # Send audio every 2 seconds (32 chunks at CHUNK=1024, RATE=16000)
+                    if chunk_count >= 32:
+                        # Convert to WAV format
+                        wav_audio = create_wav_from_bytes(audio_buffer)
+                        await websocket.send(wav_audio)
+                        audio_buffer = b""
+                        chunk_count = 0
+                    
                     await asyncio.sleep(0.01)
             finally:
+                # Send remaining audio
+                if audio_buffer:
+                    wav_audio = create_wav_from_bytes(audio_buffer)
+                    await websocket.send(wav_audio)
+                
                 stream.stop_stream()
                 stream.close()
         except Exception as e:
@@ -94,7 +126,7 @@ class GriotVoiceClient:
                     elif msg_type == "waiting":
                         heard = data.get('heard', '')
                         if heard:
-                            print(f"   Heard: '{heard}' (keep saying 'Griot')")
+                            print(f"   Heard: '{heard}' (say 'Griot' - try pronouncing it 'GREE-oh')")
                     
                     elif msg_type == "wake_word_detected":
                         wake_word_detected = True
