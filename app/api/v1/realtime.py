@@ -54,6 +54,7 @@ async def websocket_voice_endpoint(websocket: WebSocket):
     - {"type": "error", "message": "..."} - Error occurred
     """
     await websocket.accept()
+    manager.connect(websocket)
     logger.info("WebSocket connection established")
     
     try:
@@ -67,8 +68,12 @@ async def websocket_voice_endpoint(websocket: WebSocket):
         audio_buffer = io.BytesIO()
         
         while True:
-            # Receive audio chunk from client
-            data = await websocket.receive()
+            try:
+                # Receive audio chunk from client
+                data = await websocket.receive()
+            except Exception as e:
+                logger.error(f"Error receiving data: {str(e)}")
+                break
             
             if "bytes" in data:
                 # Audio chunk received (already in WAV format from client)
@@ -212,7 +217,8 @@ async def websocket_voice_endpoint(websocket: WebSocket):
                                 "message": "🎤 Listening for 'Griot' again..."
                             })
                             audio_buffer = io.BytesIO()
-                            break
+                            # Continue the outer loop to keep listening
+                            continue
                         else:
                             # No wake word yet, keep listening
                             await websocket.send_json({
