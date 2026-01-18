@@ -8,6 +8,8 @@ import io
 from pathlib import Path
 from typing import Optional
 import base64
+import tempfile
+import os
 
 # Audio configuration
 CHUNK = 1024
@@ -36,7 +38,81 @@ class GriotVoiceClient:
         """Initialize the voice client."""
         self.uri = uri
         self.recording = False
+        self.pause_recording = False  # Flag to pause recording during playback
         self.audio = pyaudio.PyAudio()
+        self._init_audio_player()
+    
+    def _init_audio_player(self):
+        """Initialize audio player for TTS responses."""
+        try:
+            import pygame
+            pygame.mixer.init()
+            self.use_pygame = True
+        except ImportError:
+            try:
+                # Try pydub with simpleaudio as fallback
+                from pydub import AudioSegment
+                from pydub.playback import play
+                self.use_pydub = True
+                self.AudioSegment = AudioSegment
+                self.play = play
+            except ImportError:
+                # Last resort: use system command
+                self.use_system = True
+                self.use_pygame = False
+                self.use_pydub = False
+    
+    async def _play_audio(self, audio_bytes: bytes):
+        """Play audio bytes (MP3 format) automatically."""
+        try:
+            if hasattr(self, 'use_pygame') and self.use_pygame:
+                import pygame
+                # Use temporary file for pygame
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                    tmp_file.write(audio_bytes)
+                    tmp_file.flush()
+                    pygame.mixer.music.load(tmp_file.name)
+                    pygame.mixer.music.play()
+                    # Wait for playback to finish
+                    while pygame.mixer.music.get_busy():
+                        await asyncio.sleep(0.1)
+                    os.unlink(tmp_file.name)
+            
+            elif hasattr(self, 'use_pydub') and self.use_pydub:
+                # Use pydub for playback
+                audio = self.AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+                # Play in a thread to avoid blocking
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self.play, audio)
+            
+            elif hasattr(self, 'use_system') and self.use_system:
+                # Fallback to system command
+                import platform
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                    tmp_file.write(audio_bytes)
+                    tmp_file.flush()
+                    
+                    system = platform.system()
+                    if system == "Darwin":  # macOS
+                        os.system(f"afplay {tmp_file.name} &")
+                    elif system == "Linux":
+                        os.system(f"mpg123 -q {tmp_file.name} &")
+                    elif system == "Windows":
+                        os.system(f"start {tmp_file.name}")
+                    
+                    # Wait a bit for playback to start
+                    await asyncio.sleep(0.5)
+                    # Note: We can't easily wait for completion with system commands
+                    # So we'll just delete after a delay
+                    await asyncio.sleep(len(audio_bytes) / 16000)  # Rough estimate
+                    try:
+                        os.unlink(tmp_file.name)
+                    except:
+                        pass
+        
+        except Exception as e:
+            print(f"⚠️  Could not play audio automatically: {e}")
+            print("   Audio response saved to griot_response.mp3")
     
     async def run(self):
         """Start the real-time voice interaction."""
@@ -86,6 +162,11 @@ class GriotVoiceClient:
             
             try:
                 while True:
+                    # Skip recording if paused (during playback)
+                    if self.pause_recording:
+                        await asyncio.sleep(0.1)
+                        continue
+                    
                     data = stream.read(CHUNK, exception_on_overflow=False)
                     audio_buffer += data
                     chunk_count += 1
@@ -143,13 +224,22 @@ class GriotVoiceClient:
                         
                         print(f"\n🎤 Griot: {text}\n")
                         
-                        # Save and play audio response
+                        # Save and automatically play audio response
                         if audio_b64:
                             audio_bytes = base64.b64decode(audio_b64)
                             output_file = Path("griot_response.mp3")
                             output_file.write_bytes(audio_bytes)
-                            print(f"💾 Response saved to {output_file}")
-                            print(f"   Play with: open {output_file}\n")
+                            
+                            # Pause recording during playback to avoid feedback
+                            self.pause_recording = True
+                            
+                            # Automatically play the audio response
+                            print("🔊 Playing response...")
+                            await self._play_audio(audio_bytes)
+                            print("✅ Response played\n")
+                            
+                            # Resume recording after playback
+                            self.pause_recording = False
                         
                         # Signal ready for next interaction
                         print("🎤 Ready for next question...\n")
@@ -180,5 +270,20 @@ if __name__ == "__main__":
         print("   pip install pyaudio")
         exit(1)
     
-    print("Starting Griot Voice Client...\n")
+    # Check for audio playback libraries
+    try:
+        import pygame
+        print("✅ Using pygame for audio playback")
+    except ImportError:
+        try:
+            from pydub import AudioSegment
+            from pydub.playback import play
+            print("✅ Using pydub for audio playback")
+        except ImportError:
+            print("⚠️  No audio playback library found. Install one of:")
+            print("   pip install pygame")
+            print("   pip install pydub simpleaudio")
+            print("   (Audio will be saved but not played automatically)")
+    
+    print("\nStarting Griot Voice Client...\n")
     asyncio.run(main())

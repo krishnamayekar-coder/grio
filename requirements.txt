@@ -14,6 +14,7 @@ sqlalchemy==2.0.23
 python-multipart==0.0.6
 pyaudio==0.2.13
 websockets==12.0
+pygame==2.5.2  # For automatic audio playback (MP3 support)
 
 # Development
 pytest==7.4.3
